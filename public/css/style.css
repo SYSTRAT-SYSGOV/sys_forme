@@ -455,3 +455,85 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* Estilos de Barras de Progresso e Indicadores para Relatórios */
+.progress-bar-container {
+  width: 100%;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+
+body.theme-light .progress-bar-container {
+  background: #e2e8f0;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.5s ease;
+}
+
+.progress-bar-fill.success {
+  background: linear-gradient(90deg, #10b981, #059669);
+}
+
+.progress-bar-fill.primary {
+  background: linear-gradient(90deg, #6366f1, #4f46e5);
+}
+
+.progress-bar-fill.warning {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+}
+
+/* Regras Otimizadas de Impressão (PDF / Impressora) */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 10pt !important;
+  }
+  .navbar, .btn, button, input, select, .datatable-container select, .datatable-container input {
+    display: none !important;
+  }
+  .glass-panel {
+    box-shadow: none !important;
+    border: 1px solid #ccc !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    backdrop-filter: none !important;
+  }
+  .custom-table th, .custom-table td {
+    color: #000000 !important;
+    border-bottom: 1px solid #ddd !important;
+    padding: 0.4rem !important;
+  }
+  .metrics-grid {
+    grid-template-columns: repeat(4, 1fr) !important;
+    gap: 0.5rem !important;
+    margin-bottom: 1rem !important;
+  }
+  .metric-card {
+    border: 1px solid #ccc !important;
+    padding: 0.75rem !important;
+  }
+  .metric-value {
+    font-size: 1.2rem !important;
+    color: #000000 !important;
+  }
+  .metric-title, .metric-sub {
+    color: #555555 !important;
+  }
+  .print-only-title {
+    display: block !important;
+    text-align: center;
+    margin-bottom: 1.5rem;
+  }
+}
+
+.print-only-title {
+  display: none;
+}
+
