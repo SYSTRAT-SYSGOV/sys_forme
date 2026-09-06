@@ -409,6 +409,170 @@ function App() {
   const [showModalSelecaoParticipante, setShowModalSelecaoParticipante] = useState(false);
   const [alunoSelecaoData, setAlunoSelecaoData] = useState({ id: null, numero_aluno: '', nome: '', cgm: '', turma: '', telefone: '', convidados_extra: 0, participa_formatura: 1 });
 
+  // Estados e Funções de Relatórios
+  const [relatoriosData, setRelatoriosData] = useState({
+    resumo: {
+      total_formandos: 0,
+      total_convidados: 0,
+      valor_total_receber: 0,
+      valor_total_recebido: 0,
+      valor_total_pendente: 0,
+      percentual_arrecadado: 0,
+      qtd_quitados: 0,
+      qtd_parciais: 0,
+      qtd_pendentes: 0
+    },
+    formas_pagamento: [],
+    turmas: []
+  });
+  const [relatorioFiltroTurma, setRelatorioFiltroTurma] = useState('');
+  const [relatorioFiltroDataInicio, setRelatorioFiltroDataInicio] = useState('');
+  const [relatorioFiltroDataFim, setRelatorioFiltroDataFim] = useState('');
+  const [turmaExpandida, setTurmaExpandida] = useState(null);
+
+  const loadRelatorios = async (turma = relatorioFiltroTurma, dInicio = relatorioFiltroDataInicio, dFim = relatorioFiltroDataFim) => {
+    try {
+      const url = `../api/relatorios.php?turma=${encodeURIComponent(turma)}&data_inicio=${encodeURIComponent(dInicio)}&data_fim=${encodeURIComponent(dFim)}`;
+      const res = await fetch(url);
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch (err) {}
+
+      if (data.status === 'success') {
+        setRelatoriosData(data);
+        return;
+      }
+    } catch (e) {}
+
+    // Fallback local se API PHP não responder ou ambiente local mock
+    calcularRelatoriosLocal(turma, dInicio, dFim);
+  };
+
+  const calcularRelatoriosLocal = (turma = '', dInicio = '', dFim = '') => {
+    const unitVal = config.valor_pessoa_extra || config.valor_total_base || 80;
+    const formandosAtivos = formandos.filter(f => (f.participa_formatura === 1 || f.participa_formatura === undefined || f.participa_formatura === null) && (!turma || f.turma === turma));
+    
+    let vTotalReceber = 0;
+    let vTotalRecebido = 0;
+    let totalConv = 0;
+    let qtdQuitados = 0;
+    let qtdParciais = 0;
+    let qtdPendentes = 0;
+
+    const formasMap = {};
+    const turmasMap = {};
+
+    formandosAtivos.forEach(f => {
+      const convExtra = Math.max(1, parseInt(f.convidados_extra) || 1);
+      totalConv += convExtra;
+      const vPagar = convExtra * unitVal;
+      vTotalReceber += vPagar;
+
+      let totalPagoAluno = 0;
+      const pagts = f.pagamentos || [];
+      pagts.forEach(p => {
+        const dPag = p.data_pagamento || '';
+        if (dInicio && dPag < dInicio) return;
+        if (dFim && dPag > dFim) return;
+
+        const val = parseFloat(p.valor || 0);
+        totalPagoAluno += val;
+        vTotalRecebido += val;
+
+        const forma = (p.forma_pagamento || 'Pix').trim();
+        if (!formasMap[forma]) {
+          formasMap[forma] = { forma_pagamento: forma, total_recebido: 0, qtd_transacoes: 0, percentual: 0 };
+        }
+        formasMap[forma].total_recebido += val;
+        formasMap[forma].qtd_transacoes++;
+      });
+
+      const sDev = Math.max(0, vPagar - totalPagoAluno);
+      let status = 'pendente';
+      if (totalPagoAluno >= vPagar && vPagar > 0) {
+        status = 'quitado';
+        qtdQuitados++;
+      } else if (totalPagoAluno > 0) {
+        status = 'parcial';
+        qtdParciais++;
+      } else {
+        qtdPendentes++;
+      }
+
+      const tNome = (f.turma || 'Sem Turma').trim();
+      if (!turmasMap[tNome]) {
+        turmasMap[tNome] = {
+          turma: tNome,
+          total_formandos: 0,
+          total_convidados: 0,
+          valor_total_receber: 0,
+          valor_total_recebido: 0,
+          valor_total_pendente: 0,
+          percentual_pago: 0,
+          qtd_quitados: 0,
+          qtd_parciais: 0,
+          qtd_pendentes: 0,
+          alunos: []
+        };
+      }
+
+      turmasMap[tNome].total_formandos++;
+      turmasMap[tNome].total_convidados += convExtra;
+      turmasMap[tNome].valor_total_receber += vPagar;
+      turmasMap[tNome].valor_total_recebido += totalPagoAluno;
+      turmasMap[tNome].valor_total_pendente += sDev;
+      if (status === 'quitado') turmasMap[tNome].qtd_quitados++;
+      else if (status === 'parcial') turmasMap[tNome].qtd_parciais++;
+      else turmasMap[tNome].qtd_pendentes++;
+
+      turmasMap[tNome].alunos.push({
+        id: f.id,
+        numero_aluno: f.numero_aluno,
+        nome: f.nome,
+        cgm: f.cgm,
+        turma: tNome,
+        telefone: f.telefone,
+        convidados_extra: convExtra,
+        valor_total_a_pagar: vPagar,
+        total_pago: totalPagoAluno,
+        saldo_devedor: sDev,
+        status: status,
+        qtd_pagamentos: pagts.length
+      });
+    });
+
+    const vPend = Math.max(0, vTotalReceber - vTotalRecebido);
+    const percArr = vTotalReceber > 0 ? Math.round((vTotalRecebido / vTotalReceber) * 1000) / 10 : 0;
+
+    const listFormas = Object.values(formasMap);
+    listFormas.forEach(fp => {
+      fp.percentual = vTotalRecebido > 0 ? Math.round((fp.total_recebido / vTotalRecebido) * 1000) / 10 : 0;
+    });
+    listFormas.sort((a, b) => b.total_recebido - a.total_recebido);
+
+    const listTurmas = Object.values(turmasMap);
+    listTurmas.forEach(t => {
+      t.percentual_pago = t.valor_total_receber > 0 ? Math.round((t.valor_total_recebido / t.valor_total_receber) * 1000) / 10 : 0;
+    });
+    listTurmas.sort((a, b) => a.turma.localeCompare(b.turma, 'pt-BR', { numeric: true }));
+
+    setRelatoriosData({
+      resumo: {
+        total_formandos: formandosAtivos.length,
+        total_convidados: totalConv,
+        valor_total_receber: vTotalReceber,
+        valor_total_recebido: vTotalRecebido,
+        valor_total_pendente: vPend,
+        percentual_arrecadado: percArr,
+        qtd_quitados: qtdQuitados,
+        qtd_parciais: qtdParciais,
+        qtd_pendentes: qtdPendentes
+      },
+      formas_pagamento: listFormas,
+      turmas: listTurmas
+    });
+  };
+
   const loadListaCompletaAlunos = async () => {
     try {
       const res = await fetch('../api/formandos.php?lista_completa=1');
@@ -1267,6 +1431,10 @@ function App() {
           <button className={`btn ${view === 'dashboard' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setView('dashboard'); loadDashboardData(); }}>
             💳 Gerenciamento de Pagamentos
           </button>
+
+          <button className={`btn ${view === 'relatorios' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setView('relatorios'); loadRelatorios(); loadTurmas(); }}>
+            📊 Relatórios
+          </button>
           
           <button className={`btn ${view === 'importar_alunos' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setView('importar_alunos'); loadListaCompletaAlunos(); loadTurmas(); }}>
             👨‍🎓 Gerenciar Alunos
@@ -1303,6 +1471,298 @@ function App() {
       </header>
 
       <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 1rem' }}>
+
+        {/* TELA DE RELATÓRIOS FINANCEIROS E DE PAGAMENTO POR TURMA */}
+        {view === 'relatorios' && (
+          <div className="glass-panel" style={{ padding: '2rem' }}>
+            {/* Título Visível na Impressão (PDF/Impresso) */}
+            <div className="print-only-title">
+              <h1 style={{ fontSize: '1.8rem', fontWeight: '800' }}>{config.titulo_formatura} - Relatório Financeiro</h1>
+              <p style={{ fontSize: '0.9rem', color: '#555' }}>Emitido em {new Date().toLocaleDateString('pt-BR')} às {new Date().toLocaleTimeString('pt-BR')}</p>
+            </div>
+
+            {/* Cabeçalho de Tela */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.5rem' }}>
+              <div>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: '800', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  📊 Relatório Financeiro & Pagamentos por Turma
+                </h2>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
+                  Visão consolidada da receita prevista, valores arrecadados, saldo pendente e quitação das turmas.
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => window.print()} title="Imprimir Relatório ou Salvar em PDF">
+                  🖨️ Imprimir / PDF
+                </button>
+              </div>
+            </div>
+
+            {/* BARRA DE FILTROS */}
+            <div style={{ background: 'rgba(15, 23, 42, 0.4)', padding: '1rem', borderRadius: '12px', border: '1px solid var(--bg-card-border)', marginBottom: '1.5rem' }}>
+              <form onSubmit={e => { e.preventDefault(); loadRelatorios(); }} style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'flex-end' }}>
+                <div style={{ flex: '1 1 180px' }}>
+                  <label className="form-label" style={{ marginBottom: '0.2rem' }}>Filtrar por Turma</label>
+                  <select
+                    className="form-control"
+                    value={relatorioFiltroTurma}
+                    onChange={e => setRelatorioFiltroTurma(e.target.value)}
+                  >
+                    <option value="">Todas as Turmas</option>
+                    {listaTurmas.map(t => (
+                      <option key={t.id} value={t.nome}>Turma {t.nome}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ flex: '1 1 150px' }}>
+                  <label className="form-label" style={{ marginBottom: '0.2rem' }}>Data Inicial</label>
+                  <input
+                    type="date"
+                    className="form-control"
+                    value={relatorioFiltroDataInicio}
+                    onChange={e => setRelatorioFiltroDataInicio(e.target.value)}
+                  />
+                </div>
+
+                <div style={{ flex: '1 1 150px' }}>
+                  <label className="form-label" style={{ marginBottom: '0.2rem' }}>Data Final</label>
+                  <input
+                    type="date"
+                    className="form-control"
+                    value={relatorioFiltroDataFim}
+                    onChange={e => setRelatorioFiltroDataFim(e.target.value)}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button type="submit" className="btn btn-primary btn-sm" style={{ padding: '0.65rem 1.2rem' }}>
+                    🔍 Filtrar
+                  </button>
+
+                  {(relatorioFiltroTurma || relatorioFiltroDataInicio || relatorioFiltroDataFim) && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => {
+                        setRelatorioFiltroTurma('');
+                        setRelatorioFiltroDataInicio('');
+                        setRelatorioFiltroDataFim('');
+                        loadRelatorios('', '', '');
+                      }}
+                    >
+                      Limpar Filtros
+                    </button>
+                  )}
+                </div>
+              </form>
+            </div>
+
+            {/* CARDS KPIS FINANCEIROS GLOBAIS */}
+            <div className="metrics-grid">
+              <div className="glass-panel metric-card primary">
+                <div className="metric-title">💰 Valor Total Previsto</div>
+                <div className="metric-value" style={{ color: '#818cf8' }}>
+                  R$ {(relatoriosData.resumo.valor_total_receber || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </div>
+                <div className="metric-sub">
+                  👥 {relatoriosData.resumo.total_formandos || 0} formandos ({relatoriosData.resumo.total_convidados || 0} pessoas/convidados)
+                </div>
+              </div>
+
+              <div className="glass-panel metric-card success">
+                <div className="metric-title">💵 Valor Total Recebido</div>
+                <div className="metric-value" style={{ color: '#34d399' }}>
+                  R$ {(relatoriosData.resumo.valor_total_recebido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </div>
+                <div className="metric-sub">
+                  ✨ Arrecadado: <strong>{relatoriosData.resumo.percentual_arrecadado || 0}%</strong> do total previsto
+                </div>
+                <div className="progress-bar-container">
+                  <div className="progress-bar-fill success" style={{ width: `${Math.min(100, relatoriosData.resumo.percentual_arrecadado || 0)}%` }}></div>
+                </div>
+              </div>
+
+              <div className="glass-panel metric-card danger">
+                <div className="metric-title">⏳ Falta a Receber (Pendente)</div>
+                <div className="metric-value" style={{ color: '#f87171' }}>
+                  R$ {(relatoriosData.resumo.valor_total_pendente || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </div>
+                <div className="metric-sub">
+                  ⚠️ Saldo devedor pendente dos formandos
+                </div>
+              </div>
+
+              <div className="glass-panel metric-card warning">
+                <div className="metric-title">📊 Status de Quitação</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', marginTop: '0.4rem', fontSize: '0.85rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>🟢 Totalmente Quitados:</span>
+                    <strong style={{ color: '#34d399' }}>{relatoriosData.resumo.qtd_quitados || 0}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>🟡 Pagamento Parcial:</span>
+                    <strong style={{ color: '#fbbf24' }}>{relatoriosData.resumo.qtd_parciais || 0}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>🔴 Nenhum Pagamento:</span>
+                    <strong style={{ color: '#f87171' }}>{relatoriosData.resumo.qtd_pendentes || 0}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* SEÇÃO 1: LISTA POR FORMA DE PAGAMENTO */}
+            <div style={{ marginTop: '2.5rem', marginBottom: '2.5rem' }}>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#a5b4fc' }}>
+                💳 Detalhamento de Arrecadação por Forma de Pagamento
+              </h3>
+
+              {(!relatoriosData.formas_pagamento || relatoriosData.formas_pagamento.length === 0) ? (
+                <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-muted)', background: 'rgba(15, 23, 42, 0.4)', borderRadius: '12px' }}>
+                  Nenhum pagamento registrado no período selecionado.
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
+                  {relatoriosData.formas_pagamento.map((fp, idx) => (
+                    <div key={idx} style={{ background: 'rgba(15, 23, 42, 0.5)', padding: '1.25rem', borderRadius: '12px', border: '1px solid var(--bg-card-border)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <span style={{ fontWeight: '700', fontSize: '1rem', color: '#f8fafc' }}>
+                          {fp.forma_pagamento.includes('Pix') ? '📱' : fp.forma_pagamento.includes('Dinheiro') ? '💵' : fp.forma_pagamento.includes('Cartão') ? '💳' : '📄'} {fp.forma_pagamento}
+                        </span>
+                        <span className="badge badge-success" style={{ fontSize: '0.85rem' }}>
+                          {fp.percentual || 0}% do arrecadado
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '1.5rem', fontWeight: '800', color: '#34d399', marginBottom: '0.3rem' }}>
+                        R$ {(fp.total_recebido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
+                        <span>Transações / Pagamentos: <strong>{fp.qtd_transacoes || 0}</strong></span>
+                      </div>
+                      <div className="progress-bar-container">
+                        <div className="progress-bar-fill success" style={{ width: `${Math.min(100, fp.percentual || 0)}%` }}></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* SEÇÃO 2: RELATÓRIOS DE PAGAMENTO POR TURMAS */}
+            <div style={{ marginTop: '2.5rem' }}>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#a5b4fc' }}>
+                🏫 Relatório Financeiro e Quitação por Turmas
+              </h3>
+
+              {(!relatoriosData.turmas || relatoriosData.turmas.length === 0) ? (
+                <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-muted)', background: 'rgba(15, 23, 42, 0.4)', borderRadius: '12px' }}>
+                  Nenhuma turma encontrada.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                  {relatoriosData.turmas.map((tInfo, idx) => {
+                    const isExpanded = turmaExpandida === tInfo.turma;
+                    return (
+                      <div key={idx} style={{ background: 'rgba(15, 23, 42, 0.5)', borderRadius: '12px', border: '1px solid var(--bg-card-border)', overflow: 'hidden' }}>
+                        {/* Resumo da Turma */}
+                        <div style={{ padding: '1.25rem', display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', background: 'rgba(30, 41, 59, 0.4)' }}>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                              <span className="badge badge-success" style={{ fontSize: '1rem', padding: '0.35rem 0.8rem' }}>
+                                Turma {tInfo.turma}
+                              </span>
+                              <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                                👥 {tInfo.total_formandos} Alunos | 🎟️ {tInfo.total_convidados} Convidados
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '1.5rem', marginTop: '0.75rem', flexWrap: 'wrap', fontSize: '0.9rem' }}>
+                              <div>Previsto: <strong style={{ color: '#818cf8' }}>R$ {(tInfo.valor_total_receber || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong></div>
+                              <div>Arrecadado: <strong style={{ color: '#34d399' }}>R$ {(tInfo.valor_total_recebido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong> ({tInfo.percentual_pago}%)</div>
+                              <div>Pendente: <strong style={{ color: '#f87171' }}>R$ {(tInfo.valor_total_pendente || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong></div>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <div style={{ textAlign: 'right', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              <div>🟢 Quitados: <strong>{tInfo.qtd_quitados}</strong></div>
+                              <div>🟡 Parciais: <strong>{tInfo.qtd_parciais}</strong></div>
+                              <div>🔴 Pendentes: <strong>{tInfo.qtd_pendentes}</strong></div>
+                            </div>
+
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setTurmaExpandida(isExpanded ? null : tInfo.turma)}
+                            >
+                              {isExpanded ? '▲ Ocultar Alunos' : '▼ Ver Alunos da Turma'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Barra de Progresso Geral da Turma */}
+                        <div style={{ padding: '0 1.25rem 1rem 1.25rem' }}>
+                          <div className="progress-bar-container" style={{ height: '8px' }}>
+                            <div className="progress-bar-fill success" style={{ width: `${Math.min(100, tInfo.percentual_pago || 0)}%` }}></div>
+                          </div>
+                        </div>
+
+                        {/* Tabela Expansível com Lista de Alunos da Turma */}
+                        {isExpanded && (
+                          <div style={{ padding: '1rem', borderTop: '1px solid var(--bg-card-border)', background: 'rgba(15, 23, 42, 0.7)' }}>
+                            <h4 style={{ fontSize: '0.95rem', fontWeight: '700', marginBottom: '0.75rem', color: '#a5b4fc' }}>
+                              📋 Relação de Alunos - Turma {tInfo.turma}
+                            </h4>
+                            <div className="table-responsive">
+                              <table className="custom-table" style={{ fontSize: '0.85rem' }}>
+                                <thead>
+                                  <tr>
+                                    <th>Nº</th>
+                                    <th>Nome do Aluno</th>
+                                    <th>CGM</th>
+                                    <th>Convidados</th>
+                                    <th>Total Previsto</th>
+                                    <th>Total Pago</th>
+                                    <th>Falta Pagar</th>
+                                    <th>Status</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(tInfo.alunos || []).map((aluno, aIdx) => (
+                                    <tr key={aluno.id || aIdx}>
+                                      <td>{aluno.numero_aluno || '-'}</td>
+                                      <td><strong>{aluno.nome}</strong></td>
+                                      <td>{aluno.cgm || '-'}</td>
+                                      <td>{aluno.convidados_extra} conv.</td>
+                                      <td>R$ {(aluno.valor_total_a_pagar || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                                      <td style={{ color: '#34d399', fontWeight: '700' }}>R$ {(aluno.total_pago || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                                      <td style={{ color: aluno.saldo_devedor > 0 ? '#f87171' : 'inherit', fontWeight: aluno.saldo_devedor > 0 ? '700' : 'normal' }}>
+                                        R$ {(aluno.saldo_devedor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                      </td>
+                                      <td>
+                                        {aluno.status === 'quitado' ? (
+                                          <span className="badge badge-success">🟢 Quitado</span>
+                                        ) : aluno.status === 'parcial' ? (
+                                          <span className="badge badge-warning">🟡 Parcial</span>
+                                        ) : (
+                                          <span className="badge badge-danger">🔴 Pendente</span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* TELA DE GESTÃO DE TURMAS (SOMENTE ADMIN) */}
         {view === 'turmas' && isAdmin && (
